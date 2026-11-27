@@ -33,15 +33,20 @@ static void swap(int *a, int *b)
 */
 static void random_shuffle(int a[], int lo, int hi)
 {
-        if (init_seed == 0) {
-                srand(time(NULL));
-                init_seed = 1;
-        }
-        int i, j;
-        for (i = lo; i <= hi; i++) {
-                j = rand() % (hi - lo) + lo;
-                swap(&a[i], &a[j]);
-        }
+    if (lo >= hi)
+        return;
+
+    if (init_seed == 0) {
+        srand(time(NULL));
+        init_seed = 1;
+    }
+
+    int i, j;
+
+    for (i = hi; i > lo; i--) {
+        j = lo + rand() % (i - lo + 1);
+        swap(&a[i], &a[j]);
+    }
 }
 
 /*
