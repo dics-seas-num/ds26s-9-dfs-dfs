@@ -1,86 +1,143 @@
-# This is a basic workflow to help you get started with Actions
 
-name: GitHub Classroom Workflow
+name: DFS Autograding
 
-# Controls when the action will run. 
 on:
-  # Triggers the workflow on push or pull request events but only for the main branch
   push:
-    branches:
-    - '*'
-    - '!badges'
-
-  # Allows you to run this workflow manually from the Actions tab
+    branches: [main]
+    paths-ignore:
+      - '.github/badges/**'
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+permissions:
+  contents: read
+
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    name: Autograding
-    # The type of runner that the job will run on
-    runs-on: self-hosted
+  grade:
+    name: Grade DFS
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
+    outputs:
+      score: ${{ steps.grading.outputs.score }}
+
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v2
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # otherwise, you will failed to push refs to dest repo
+          persist-credentials: false
 
-      - uses: education/autograding@v1
-        id: autograder
+      - name: Compile
+        id: compile
         continue-on-error: true
+        run: gcc main.c list.c graph.c qsort.c -lm -o dfs
 
-      - name: save points
+      - name: Run tests
+        id: grading
+        shell: bash
         run: |
-          push.sh ${{ github.actor }} $(pwd) ${{ steps.autograder.outputs.Points }} dfs
-        continue-on-error: true
+          score=0
 
+          if [ "${{ steps.compile.outcome }}" = "success" ]; then
 
-      # make dir for badges
-      - name: badges branch and make dir
+            for test in sample small big; do
+
+              case "$test" in
+                sample) points=1 ;;
+                small)  points=4 ;;
+                big)    points=5 ;;
+              esac
+
+              echo "Testing $test..."
+
+              if timeout -k 1s 1s ./dfs < "$test/input.txt" > actual.txt; then
+
+                if python3 -c 'import sys; from pathlib import Path; sys.exit(Path(sys.argv[1]).read_text().split() != Path(sys.argv[2]).read_text().split())' "$test/output.txt" actual.txt; then
+
+                  echo "PASS: $test (+$points)"
+                  score=$((score + points))
+
+                else
+                  echo "FAIL: $test (wrong output)"
+                fi
+
+              else
+                echo "FAIL: $test (runtime error or timeout)"
+              fi
+
+            done
+
+          else
+            echo "Compilation failed."
+          fi
+
+          echo "score=$score" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## DFS Autograding"
+            echo ""
+            echo "**Score: $score/10**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  badge:
+    name: Update Points Badge
+    needs: grade
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Generate badge
+        env:
+          SCORE: ${{ needs.grade.outputs.score }}
         run: |
-          git checkout badges || git checkout -b badges
           mkdir -p .github/badges
-        continue-on-error: true
 
-      - name: show points
-        run: echo ${{ steps.autograder.outputs.Points }}
-        continue-on-error: true
-        
-      # make points badge
-      - name: points badge
-        uses: emibcn/badge-action@v1
-        with:
-          LABEL: 'Points'
-          STATUS: ${{ steps.autograder.outputs.Points }}
-          COLOR: cyan
-          path: '.github/badges/points.svg'
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
 
-        # commit and push badge if score has changed
+          score = int(os.environ["SCORE"])
+
+          if score == 10:
+              color = "#2da44e"
+          elif score >= 5:
+              color = "#d29922"
+          else:
+              color = "#cf222e"
+
+          svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="110" height="20">
+          <rect width="110" height="20" rx="3" fill="#555"/>
+          <rect x="55" width="55" height="20" rx="3" fill="{color}"/>
+          <text x="27" y="14" fill="white" font-size="11" text-anchor="middle">Points</text>
+          <text x="82" y="14" fill="white" font-size="11" text-anchor="middle">{score}/10</text>
+          </svg>'''
+
+          Path(".github/badges/points.svg").write_text(svg)
+          PY
+
       - name: Commit badge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add '.github/badges/points.svg'
-          git commit -m "Add/Update badge"
-        continue-on-error: true
-        
-      - name: Push badge commit
-        uses: ad-m/github-push-action@master
-        if: ${{ success() }}
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: badges
-          force: true
-        continue-on-error: true
+          set -euo pipefail
 
-      # fail job if autograder returns failed
-      # outcome can be 'success', 'failure', 'cancelled', or 'skipped'
-      # trigger fail either on !success or on failure depending on preference
-      - name: check autograder pass fail
-        if: ${{ steps.autograder.outcome != 'success' }}
-        # if: ${{ steps.autograder.outcome == 'failure' }}
-        # if: ${{ failure }}
-        run: exit 1        
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .github/badges/points.svg
+
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+
+          git commit -m "Update DFS points badge [skip ci]"
+
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH" push origin HEAD:main
